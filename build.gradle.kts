@@ -15,7 +15,7 @@ plugins {
 
 val remoteRobotVersion = "0.11.20"
 val pluginId = "dev.sweep.assistant"
-val pluginName = "Self-Hosted Enterprise Updater"
+val pluginName = "Sweep AI NES Local"
 println("Building plugin: $pluginName with ID: $pluginId")
 group = "dev.sweep"
 version = "1.29.3"
