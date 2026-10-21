@@ -211,22 +211,28 @@ fun gitIgnoredPaths(project: Project): GitIgnoredPaths {
     val allDirectories = mutableSetOf<String>()
 
     repositories.forEach { repo ->
-        repo.use { repository ->
-            val git = Git(repository)
-            val status = git.status().call()
-            val ignoredFiles = status.ignoredNotInIndex
-            val workTree = repository.workTree
-            val projectPath = projectDir.toPath()
+        try {
+            repo.use { repository ->
+                val git = Git(repository)
+                val status = git.status().call()
+                val ignoredFiles = status.ignoredNotInIndex
+                val workTree = repository.workTree
+                val projectPath = projectDir.toPath()
 
-            for (path in ignoredFiles) {
-                val absolutePath = File(workTree, path)
-                val relativePath = projectPath.relativize(absolutePath.toPath()).toString()
-                if (absolutePath.isDirectory) {
-                    allDirectories.add(relativePath)
-                } else {
-                    allFiles.add(relativePath)
+                for (path in ignoredFiles) {
+                    val absolutePath = File(workTree, path)
+                    val relativePath = projectPath.relativize(absolutePath.toPath()).toString()
+                    if (absolutePath.isDirectory) {
+                        allDirectories.add(relativePath)
+                    } else {
+                        allFiles.add(relativePath)
+                    }
                 }
             }
+        } catch (e: Throwable) {
+            // Catching Throwable: JGit can throw a bare Error (not Exception) on
+            // IJent-backed filesystems — see getCurrentBranchName for details.
+            logger.debug("Failed to get ignored paths for repository", e)
         }
     }
     return GitIgnoredPaths(allFiles, allDirectories)
@@ -251,7 +257,13 @@ fun getCurrentBranchName(project: Project): String? {
             logger.debug("Thread interrupted while getting current branch name", e)
             Thread.currentThread().interrupt() // Restore interrupt status
             return null
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // Catching Throwable, not just Exception: JGit's filesystem-attribute
+            // detection can throw a bare kotlin.NotImplementedError (an Error, not
+            // an Exception) when the project is accessed through IntelliJ's IJent
+            // remote/WSL filesystem bridge, which doesn't implement getAttribute()
+            // yet. Falling through to the CLI git path below handles that fine.
+            logger.debug("JGit failed to get current branch name, falling back to git CLI", e)
             null
         }
 
@@ -336,7 +348,10 @@ fun getRecentCommitMessages(
             logger.debug("Thread interrupted while getting recent commit messages", e)
             Thread.currentThread().interrupt() // Restore interrupt status
             return emptyList()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // See getCurrentBranchName: JGit can throw a bare Error (not Exception)
+            // on IJent-backed filesystems. Fall through to the CLI git path below.
+            logger.debug("JGit failed to get recent commit messages, falling back to git CLI", e)
             null
         }
 
@@ -410,7 +425,9 @@ fun getUncommittedChanges(project: Project): Map<GitChangeType, List<String>> {
                     GitChangeType.CONFLICTING to status.conflicting.toList(),
                 )
         }
-    } catch (e: Exception) {
+    } catch (e: Throwable) {
+        // Catching Throwable: JGit can throw a bare Error (not Exception) on
+        // IJent-backed filesystems — see getCurrentBranchName for details.
         logger.warn("Failed to get uncommitted files", e)
     }
 
@@ -466,14 +483,16 @@ fun untrackIdeaFile(
                                 .addFilepattern(relativePath)
                                 .setCached(true)
                                 .call()
-                        } catch (e: Exception) {
-                            // File might not be tracked, which is fine
+                        } catch (e: Throwable) {
+                            // File might not be tracked, which is fine. Also catches
+                            // JGit's bare Errors on IJent-backed filesystems.
                         }
                     }
                 }
             }
-        } catch (e: Exception) {
-            // Silently handle any Git operation failures
+        } catch (e: Throwable) {
+            // Catching Throwable: JGit can throw a bare Error (not Exception) on
+            // IJent-backed filesystems — see getCurrentBranchName for details.
             logger.debug("Failed to untrack $fileName", e)
         }
     }
