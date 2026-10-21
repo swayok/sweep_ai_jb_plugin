@@ -341,6 +341,11 @@ class RecentEditsTracker(
     private var consumerJob: Job? = null
     private val fetchJobs =
         ConcurrentHashMap<Long, CompletableDeferred<Pair<AutocompleteRequestEntry, NextEditAutocompleteResponse?>>>()
+    // The actual coroutine Jobs running each fetch. Cancelling these aborts the
+    // in-flight HTTP request (java.net.http honors CompletableFuture cancellation
+    // via kotlinx.coroutines.future.await). fetchJobs above only holds the
+    // result-deferred, which doesn't propagate to the running coroutine.
+    private val runningJobs = ConcurrentHashMap<Long, Job>()
     private val mutex = Mutex()
     private val completionChannel =
         Channel<Pair<AutocompleteRequestEntry, NextEditAutocompleteResponse?>>(Channel.BUFFERED)
@@ -381,7 +386,9 @@ class RecentEditsTracker(
     private val recentCursorPositions = EvictingQueue<CursorPositionRecord>(MAX_CURSOR_POSITIONS_TRACKED)
     private val recentUserActions = EvictingQueue<UserAction>(MAX_RECENT_USER_ACTIONS)
     private val debouncer =
-        Debouncer({ SweepConfig.getInstance(project).getDebounceThresholdMs() }, scope, project) { processLatestEdit() }
+        Debouncer({
+            SweepConfig.getInstance(project).getDebounceThresholdMs()
+        }, scope, project) { processLatestEdit() }
     private var lastDocumentText: String? = null
     private var originalDocumentText: String = ""
 
@@ -402,6 +409,14 @@ class RecentEditsTracker(
     private val MAX_TRACKED_DIAGNOSTICS = 500
 
     var currentSuggestion: AutocompleteSuggestion? = null
+    // The requestTime of the request that produced currentSuggestion. Used to
+    // recognise streaming partial updates so subsequent partials from the same
+    // request replace the displayed ghost text in-place instead of being
+    // dropped by the "currentSuggestion != null → continue" gate. Volatile
+    // because the consumer worker (Default dispatcher) reads it while the EDT
+    // writes it.
+    @Volatile
+    private var currentSuggestionRequestTime: Long = 0L
     private var suggestionQueue: Queue<NextEditAutocompletion> = LinkedList()
 
     // Queue for import fix suggestions with timestamps and validation data
@@ -1923,13 +1938,16 @@ class RecentEditsTracker(
         requestEntry: AutocompleteRequestEntry,
         deferred: CompletableDeferred<Pair<AutocompleteRequestEntry, NextEditAutocompleteResponse?>>,
     ) = ioScope.launch {
+        val self = coroutineContext[Job]!!
         try {
             mutex.withLock {
-                // Cancel all previous requests
+                // Cancel all previous requests (jobs aborts in-flight HTTP).
+                runningJobs.values.forEach { it.cancel() }
+                runningJobs.clear()
                 fetchJobs.values.forEach { it.cancel() }
                 fetchJobs.clear()
 
-                // Add the new request
+                runningJobs[requestEntry.requestTime] = self
                 fetchJobs[requestEntry.requestTime] = deferred
             }
 //            println("Sending request: ${requestEntry.id} at time ${requestEntry.requestTime}")
@@ -1938,6 +1956,13 @@ class RecentEditsTracker(
                     filePath = requestEntry.editorState.filePath,
                     fileContents = requestEntry.editorState.documentText,
                     caretPosition = requestEntry.editorState.cursorOffset,
+                    onPartial = { partial ->
+                        // Emit a streaming partial down the same channel.
+                        // adjustIndices is normally applied by fetchAutocompleteRequest on the
+                        // final response; do it here too so partials are coordinate-consistent.
+                        partial.adjustIndices(requestEntry.editorState.documentText)
+                        completionChannel.send(requestEntry to partial)
+                    },
                 )?.apply { adjustIndices(requestEntry.editorState.documentText) }
             // println("Received response: ${response?.autocomplete_id} in ${System.currentTimeMillis() - requestEntry.requestTime}")
             deferred.complete(requestEntry to response)
@@ -1949,6 +1974,7 @@ class RecentEditsTracker(
         } finally {
             mutex.withLock {
                 fetchJobs.remove(requestEntry.requestTime)
+                runningJobs.remove(requestEntry.requestTime)
             }
         }
     }
@@ -1965,8 +1991,15 @@ class RecentEditsTracker(
                         response ?: continue
 //                        println("Fetch jobs size: ${fetchJobs.size}")
 
-                        // First check if a change has already been proposed:
-                        if (currentSuggestion != null) continue
+                        // A streaming partial for the same request that's currently displayed:
+                        // dispose silently and re-render. This is the common path while a
+                        // local OpenAI model streams tokens.
+                        val isStreamingUpdate =
+                            currentSuggestion != null && currentSuggestionRequestTime == request.requestTime
+
+                        // First check if a change has already been proposed (but allow streaming
+                        // updates for the same request through):
+                        if (currentSuggestion != null && !isStreamingUpdate) continue
 
                         // Second check if there are applied changes
                         if (isAppliedCodeBlockActive()) {
@@ -1976,43 +2009,70 @@ class RecentEditsTracker(
                         // Third check if there are multi-line selections active
                         if (hasMultiLineSelection()) continue
 
-                        // Then either it's the last request sent or it's an extension of the added code:
-                        val isLatestRequest =
-                            mutex.withLock {
-                                val maxTime = (
-                                    fetchJobs.values.maxOfOrNull {
-                                        if (it.isCompleted) {
-                                            it.getCompleted().first.requestTime
-                                        } else {
-                                            0L
-                                        }
-                                    } ?: 0L
-                                )
-                                request.requestTime >= maxTime
+                        // For streaming partials we already know we're on the active request
+                        // (otherwise currentSuggestion wouldn't be set for it). Skip the
+                        // latest-request gate and cancellation, both of which only apply to
+                        // fresh requests.
+                        if (!isStreamingUpdate) {
+                            val isLatestRequest =
+                                mutex.withLock {
+                                    val maxTime = (
+                                        fetchJobs.values.maxOfOrNull {
+                                            if (it.isCompleted) {
+                                                it.getCompleted().first.requestTime
+                                            } else {
+                                                0L
+                                            }
+                                        } ?: 0L
+                                    )
+                                    request.requestTime >= maxTime
+                                }
+                            if (!isLatestRequest) {
+                                val isValidGhostText = checkForGhostTextExtension(request, response)
+                                if (isValidGhostText) {
+                                    request.editorState = getCurrentEditorState() ?: continue
+                                } else {
+                                    continue
+                                }
                             }
-                        if (!isLatestRequest) {
-                            val isValidGhostText = checkForGhostTextExtension(request, response)
-                            if (isValidGhostText) {
-                                request.editorState = getCurrentEditorState() ?: continue
-                            } else {
-                                continue
-                            }
-                        }
 
-                        // If so, cancel all fetch requests
-                        mutex.withLock {
-                            fetchJobs.values.forEach { it.cancel() }
-                            fetchJobs.clear()
+                            // Cancel other in-flight requests, but DON'T cancel our own — a
+                            // streaming request continues to emit partials even after the first
+                            // response arrived, so we must keep it alive.
+                            mutex.withLock {
+                                runningJobs.entries.removeAll { (time, job) ->
+                                    if (time == request.requestTime) {
+                                        false
+                                    } else {
+                                        job.cancel()
+                                        true
+                                    }
+                                }
+                                fetchJobs.entries.removeAll { (time, deferred) ->
+                                    if (time == request.requestTime) {
+                                        false
+                                    } else {
+                                        deferred.cancel()
+                                        true
+                                    }
+                                }
+                            }
                         }
                         ApplicationManager.getApplication().invokeLater {
                             // Check if editor state is still valid
                             if (isAppliedCodeBlockActive()) {
                                 return@invokeLater
                             }
+                            // For streaming updates, drop the previous in-place so the next
+                            // render doesn't trip the rejection cache via clearAutocomplete.
+                            if (isStreamingUpdate) {
+                                currentSuggestion?.dispose()
+                                currentSuggestion = null
+                            }
                             response.completions.firstOrNull()?.let { firstResponse ->
                                 suggestionQueue.clear()
                                 response.completions.drop(1).forEach { suggestionQueue.add(it) }
-                                showAutocomplete(firstResponse, request.editorState)
+                                showAutocomplete(firstResponse, request.editorState, requestTime = request.requestTime)
                             } ?: run {
                                 // No suggestion was generated - track file contents for 1% of cases
                                 val sampleRatio =
@@ -2078,6 +2138,7 @@ class RecentEditsTracker(
         response: NextEditAutocompletion,
         requestState: EditorState? = null,
         isShowingPostJumpSuggestion: Boolean = false,
+        requestTime: Long = 0L,
     ) {
         val previousState = requestState ?: getCurrentEditorState() ?: return
 
@@ -2143,6 +2204,7 @@ class RecentEditsTracker(
                         acceptanceDisposable = null
                         currentSuggestion?.dispose()
                         currentSuggestion = it
+                        currentSuggestionRequestTime = requestTime
 
                         // This prevents the popup from being killed by out-of-bounds issues.
                         it.show(currentEditor, isShowingPostJumpSuggestion)
@@ -2217,6 +2279,7 @@ class RecentEditsTracker(
         filePath: String,
         fileContents: String,
         caretPosition: Int,
+        onPartial: (suspend (NextEditAutocompleteResponse) -> Unit)? = null,
     ): NextEditAutocompleteResponse? {
         try {
             val repoName = userSpecificRepoName(project)
@@ -2225,8 +2288,14 @@ class RecentEditsTracker(
                 logger.warn("File is too large to fetch next edit autocomplete")
                 return null
             }
-            val fileChunks = getRelevantFileChunks()
-            val otherOpenedFileChunks = getOtherOpenedFileChunks()
+            // In local OpenAI mode, skip the PSI-heavy context gathering entirely:
+            // the 300-line broad-file context the adapter prepends already covers
+            // single-file completions, and the local model doesn't benefit enough
+            // from cross-file definitions/usages to justify the 100-300ms of PSI
+            // work + extra prompt-processing time.
+            val isLocalOpenAI = SweepSettings.getInstance().autocompleteOpenAIUrl.isNotEmpty()
+            val fileChunks = if (isLocalOpenAI) emptyList() else getRelevantFileChunks()
+            val otherOpenedFileChunks = if (isLocalOpenAI) emptyList() else getOtherOpenedFileChunks()
             val clipboardText = getClipboardEntry()
             val clipboardChunks =
                 clipboardText
@@ -2255,7 +2324,10 @@ class RecentEditsTracker(
             val allFileChunks = fileChunks + otherOpenedFileChunks
             val relPath = relativePath(project, filePath) ?: filePath
             var retrievalChunks = emptyList<FileChunk>()
-            getCurrentEditorState()?.let { editorState ->
+            // In local OpenAI mode the retrieval phase is also skipped — same
+            // rationale as above: PSI-heavy and not enough quality bump on local
+            // models to justify the latency.
+            if (!isLocalOpenAI) getCurrentEditorState()?.let { editorState ->
                 val currentDropDownContents =
                     runCatching {
                         entityUsageSearchService.getCurrentDropdownContents()?.takeIf { it.isNotEmpty() }?.let {
@@ -2345,7 +2417,25 @@ class RecentEditsTracker(
 
             val startTime = System.currentTimeMillis()
 
-            val result = AutocompleteIpResolverService.getInstance(project).fetchNextEditAutocomplete(request)
+            val openAIUrl = SweepSettings.getInstance().autocompleteOpenAIUrl
+            val result =
+                if (openAIUrl.isNotEmpty()) {
+                    OpenAICompletionsAdapter.fetch(
+                        baseUrl = openAIUrl,
+                        model = SweepSettings.getInstance().autocompleteOpenAIModel,
+                        apiKey = SweepSettings.getInstance().autocompleteOpenAIApiKey,
+                        maxTokens = SweepSettings.getInstance().autocompleteOpenAIMaxTokens,
+                        filePath = relPath,
+                        fileContents = fileContents,
+                        cursorPosition = caretPosition,
+                        recentEdits = recentEdits.toList().takeLast(RECENT_CHANGES_TO_SEND),
+                        recentUserActions = recentUserActions.toList(),
+                        contextChunks = retrievalChunks + allFileChunks,
+                        onPartial = onPartial,
+                    )
+                } else {
+                    AutocompleteIpResolverService.getInstance(project).fetchNextEditAutocomplete(request)
+                }
 
             val wallTime = System.currentTimeMillis() - startTime
             val serverTime = result?.elapsed_time_ms ?: Long.MAX_VALUE
@@ -2588,6 +2678,8 @@ class RecentEditsTracker(
         consumerJob = null
 
         // Clear fetch jobs synchronously
+        runningJobs.values.forEach { it.cancel() }
+        runningJobs.clear()
         fetchJobs.forEach { (_, deferred) ->
             if (!deferred.isCompleted) {
                 deferred.cancel()

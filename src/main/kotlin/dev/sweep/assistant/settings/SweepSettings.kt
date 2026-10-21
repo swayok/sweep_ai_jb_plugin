@@ -180,6 +180,15 @@ class SweepSettings : PersistentStateComponent<SweepSettings> {
 
     var autocompleteLocalPort: Int = 8081
 
+    // Bring-your-own OpenAI-compatible /v1/completions endpoint for autocomplete.
+    // When autocompleteOpenAIUrl is non-empty, the autocomplete path bypasses the
+    // Sweep server protocol and talks to this endpoint directly using the
+    // sweep-next-edit model prompt format. See OpenAICompletionsAdapter.
+    var autocompleteOpenAIUrl: String = ""
+    var autocompleteOpenAIModel: String = "sweep-next-edit-1.5b"
+    var autocompleteOpenAIApiKey: String = ""
+    var autocompleteOpenAIMaxTokens: Int = 512
+
     fun ensureDefaultPromptsInitialized() {
         var addedPrompt = false
 

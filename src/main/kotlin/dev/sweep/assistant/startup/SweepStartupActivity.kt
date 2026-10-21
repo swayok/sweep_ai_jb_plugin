@@ -221,8 +221,12 @@ class SweepStartupActivity :
         SweepColorChangeService.getInstance(project)
         OSNotificationService.getInstance(project)
 
-        // Auto-start local autocomplete server if enabled and not already running
-        if (SweepSettings.getInstance().autocompleteLocalMode) {
+        // Auto-start local uvx autocomplete server if enabled and not already running.
+        // Suppress when a custom OpenAI-compatible endpoint is configured — that path
+        // owns autocomplete and the uvx server would just be dead weight.
+        if (SweepSettings.getInstance().autocompleteLocalMode &&
+            SweepSettings.getInstance().autocompleteOpenAIUrl.isEmpty()
+        ) {
             ApplicationManager.getApplication().executeOnPooledThread {
                 val manager = LocalAutocompleteServerManager.getInstance()
                 if (!manager.isServerHealthy()) {

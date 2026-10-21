@@ -1047,6 +1047,30 @@ class SweepConfig(
         SweepSettings.getInstance().autocompleteLocalPort = port
     }
 
+    fun getAutocompleteOpenAIUrl(): String = SweepSettings.getInstance().autocompleteOpenAIUrl
+
+    fun updateAutocompleteOpenAIUrl(url: String) {
+        SweepSettings.getInstance().autocompleteOpenAIUrl = url
+    }
+
+    fun getAutocompleteOpenAIModel(): String = SweepSettings.getInstance().autocompleteOpenAIModel
+
+    fun updateAutocompleteOpenAIModel(model: String) {
+        SweepSettings.getInstance().autocompleteOpenAIModel = model
+    }
+
+    fun getAutocompleteOpenAIApiKey(): String = SweepSettings.getInstance().autocompleteOpenAIApiKey
+
+    fun updateAutocompleteOpenAIApiKey(apiKey: String) {
+        SweepSettings.getInstance().autocompleteOpenAIApiKey = apiKey
+    }
+
+    fun getAutocompleteOpenAIMaxTokens(): Int = SweepSettings.getInstance().autocompleteOpenAIMaxTokens
+
+    fun updateAutocompleteOpenAIMaxTokens(maxTokens: Int) {
+        SweepSettings.getInstance().autocompleteOpenAIMaxTokens = maxTokens
+    }
+
     // Autocomplete exclusion banner visibility
     fun isHideAutocompleteExclusionBanner(): Boolean = state.hideAutocompleteExclusionBanner
 
@@ -4884,8 +4908,173 @@ class SweepConfig(
                             gbc,
                         )
 
-                        // Add filler to push everything to the top
+                        // ---- BYO OpenAI-compatible /v1/completions endpoint ----
                         gbc.gridy = 9
+                        gbc.weighty = 0.0
+                        gbc.fill = GridBagConstraints.HORIZONTAL
+                        add(
+                            JSeparator().apply {
+                                foreground = SweepColors.borderColor
+                                border = JBUI.Borders.empty(8, 16)
+                            },
+                            gbc,
+                        )
+
+                        gbc.gridy = 10
+                        add(
+                            JPanel().apply {
+                                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                                border = JBUI.Borders.empty(4, 16, 4, 16)
+                                add(
+                                    JLabel("Custom autocomplete endpoint (OpenAI-compatible)").apply {
+                                        withSweepFont(project)
+                                    },
+                                )
+                                add(Box.createRigidArea(Dimension(0, 2.scaled)))
+                                add(
+                                    JLabel(
+                                        "Overrides the local server. Talks /v1/completions to e.g. LM Studio, " +
+                                            "llama.cpp, vLLM serving sweep-next-edit-1.5B.",
+                                    ).apply {
+                                        withSweepFont(project, scale = 0.85f)
+                                        foreground = JBColor.GRAY
+                                        font = font.deriveFont(Font.ITALIC)
+                                    },
+                                )
+                            },
+                            gbc,
+                        )
+
+                        gbc.gridy = 11
+                        add(
+                            JPanel().apply {
+                                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                                border = JBUI.Borders.empty(4, 40, 4, 16)
+                                add(
+                                    JLabel("URL").apply {
+                                        withSweepFont(project)
+                                        preferredSize = Dimension(80.scaled, 24.scaled)
+                                    },
+                                )
+                                add(Box.createRigidArea(Dimension(8.scaled, 0)))
+                                add(
+                                    JTextField(getAutocompleteOpenAIUrl(), 24).apply {
+                                        withSweepFont(project)
+                                        maximumSize = Dimension(400.scaled, 30.scaled)
+                                        toolTipText =
+                                            "e.g. http://localhost:1234 (LM Studio default). Leave blank to disable."
+                                        addFocusListener(
+                                            object : java.awt.event.FocusAdapter() {
+                                                override fun focusLost(e: java.awt.event.FocusEvent?) {
+                                                    updateAutocompleteOpenAIUrl(text.trim())
+                                                }
+                                            },
+                                        )
+                                    },
+                                )
+                                add(Box.createHorizontalGlue())
+                            },
+                            gbc,
+                        )
+
+                        gbc.gridy = 12
+                        add(
+                            JPanel().apply {
+                                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                                border = JBUI.Borders.empty(4, 40, 4, 16)
+                                add(
+                                    JLabel("Model").apply {
+                                        withSweepFont(project)
+                                        preferredSize = Dimension(80.scaled, 24.scaled)
+                                    },
+                                )
+                                add(Box.createRigidArea(Dimension(8.scaled, 0)))
+                                add(
+                                    JTextField(getAutocompleteOpenAIModel(), 24).apply {
+                                        withSweepFont(project)
+                                        maximumSize = Dimension(400.scaled, 30.scaled)
+                                        toolTipText = "Model id sent in the request body (e.g. sweep-next-edit-1.5b)."
+                                        addFocusListener(
+                                            object : java.awt.event.FocusAdapter() {
+                                                override fun focusLost(e: java.awt.event.FocusEvent?) {
+                                                    updateAutocompleteOpenAIModel(text.trim())
+                                                }
+                                            },
+                                        )
+                                    },
+                                )
+                                add(Box.createHorizontalGlue())
+                            },
+                            gbc,
+                        )
+
+                        gbc.gridy = 13
+                        add(
+                            JPanel().apply {
+                                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                                border = JBUI.Borders.empty(4, 40, 4, 16)
+                                add(
+                                    JLabel("API key").apply {
+                                        withSweepFont(project)
+                                        preferredSize = Dimension(80.scaled, 24.scaled)
+                                    },
+                                )
+                                add(Box.createRigidArea(Dimension(8.scaled, 0)))
+                                add(
+                                    JPasswordField(getAutocompleteOpenAIApiKey(), 24).apply {
+                                        withSweepFont(project)
+                                        maximumSize = Dimension(400.scaled, 30.scaled)
+                                        toolTipText = "Optional. Sent as 'Authorization: Bearer <key>'."
+                                        addFocusListener(
+                                            object : java.awt.event.FocusAdapter() {
+                                                override fun focusLost(e: java.awt.event.FocusEvent?) {
+                                                    updateAutocompleteOpenAIApiKey(String(password))
+                                                }
+                                            },
+                                        )
+                                    },
+                                )
+                                add(Box.createHorizontalGlue())
+                            },
+                            gbc,
+                        )
+
+                        gbc.gridy = 14
+                        add(
+                            JPanel().apply {
+                                layout = BoxLayout(this, BoxLayout.X_AXIS)
+                                border = JBUI.Borders.empty(4, 40, 8, 16)
+                                add(
+                                    JLabel("Max tokens").apply {
+                                        withSweepFont(project)
+                                        preferredSize = Dimension(80.scaled, 24.scaled)
+                                    },
+                                )
+                                add(Box.createRigidArea(Dimension(8.scaled, 0)))
+                                add(
+                                    JTextField(getAutocompleteOpenAIMaxTokens().toString(), 6).apply {
+                                        withSweepFont(project)
+                                        maximumSize = Dimension(100.scaled, 30.scaled)
+                                        addFocusListener(
+                                            object : java.awt.event.FocusAdapter() {
+                                                override fun focusLost(e: java.awt.event.FocusEvent?) {
+                                                    text.toIntOrNull()?.let { n ->
+                                                        if (n in 16..8192) {
+                                                            updateAutocompleteOpenAIMaxTokens(n)
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                        )
+                                    },
+                                )
+                                add(Box.createHorizontalGlue())
+                            },
+                            gbc,
+                        )
+
+                        // Add filler to push everything to the top
+                        gbc.gridy = 15
                         gbc.weighty = 1.0
                         gbc.fill = GridBagConstraints.BOTH
                         add(JPanel(), gbc)
