@@ -71,6 +71,16 @@ object OpenAICompletionsAdapter {
     private const val APPROX_CHAR_PER_TOKEN = 4
     private const val MAX_PROMPT_CHARS = 6500 * APPROX_CHAR_PER_TOKEN
 
+    // Hard character ceilings for the window/broad-context sections. The line
+    // counts above assume reasonably short lines; a single minified, generated,
+    // or long-string-literal line can blow the character budget far past what
+    // the line counts imply, overflowing the model's context window (observed
+    // as LM Studio's "Context size has been exceeded" 500 error) even though
+    // the optional sections below are correctly budget-checked against
+    // MAX_PROMPT_CHARS. These caps apply regardless of line length.
+    private const val MAX_WINDOW_CHARS = 1000 * APPROX_CHAR_PER_TOKEN
+    private const val MAX_BROAD_CONTEXT_CHARS = 2000 * APPROX_CHAR_PER_TOKEN
+
     // Mirror cursortab's max_diff_history_tokens=1024. Past edits beyond ~1k
     // tokens give diminishing returns and add PP cost.
     private const val MAX_RECENT_EDITS_CHARS = 1024 * APPROX_CHAR_PER_TOKEN
@@ -182,6 +192,44 @@ object OpenAICompletionsAdapter {
 
     // ---------------- Window selection ----------------
 
+    /**
+     * Truncates [text] to at most [maxLen] characters, keeping a region centered
+     * on [pivot] (the cursor's offset within [text]). Spends whatever budget the
+     * shorter side doesn't need on the longer side, so a cursor near either edge
+     * doesn't waste half the budget past the edge. Returns the truncated text and
+     * the pivot's new offset within it.
+     */
+    private fun truncateAroundPivot(
+        text: String,
+        pivot: Int,
+        maxLen: Int,
+    ): Pair<String, Int> {
+        if (text.length <= maxLen) return text to pivot
+        val before = pivot
+        val after = text.length - pivot
+        var beforeBudget = maxLen / 2
+        var afterBudget = maxLen - beforeBudget
+        if (before < beforeBudget) {
+            afterBudget += (beforeBudget - before)
+            beforeBudget = before
+        } else if (after < afterBudget) {
+            beforeBudget += (afterBudget - after)
+            afterBudget = after
+        }
+        val start = (pivot - beforeBudget).coerceIn(0, text.length)
+        val end = (pivot + afterBudget).coerceIn(start, text.length)
+        return text.substring(start, end) to (pivot - start)
+    }
+
+    private fun lineNumberAtOffset(
+        text: String,
+        offset: Int,
+    ): Int {
+        var line = 0
+        for (i in 0 until offset.coerceIn(0, text.length)) if (text[i] == '\n') line++
+        return line
+    }
+
     private data class Window(
         val text: String,
         val startOffset: Int,
@@ -231,16 +279,25 @@ object OpenAICompletionsAdapter {
             endOffset = i
         }
 
-        val text = fileContents.substring(startOffset, endOffset)
-        val cursorOffsetInWindow =
-            (cursorPosition - startOffset).coerceIn(0, text.length)
+        val rawText = fileContents.substring(startOffset, endOffset)
+        val rawCursorOffsetInWindow =
+            (cursorPosition - startOffset).coerceIn(0, rawText.length)
+
+        // Line counts alone assume short lines; cap by characters too so a
+        // handful of very long lines (minified/generated code, long literals)
+        // can't balloon the prompt past the model's context window.
+        val (text, cursorOffsetInWindow) =
+            truncateAroundPivot(rawText, rawCursorOffsetInWindow, MAX_WINDOW_CHARS)
+        val trimmedFromStart = rawCursorOffsetInWindow - cursorOffsetInWindow
+        val effectiveStartOffset = startOffset + trimmedFromStart
+        val effectiveEndOffset = effectiveStartOffset + text.length
 
         return Window(
             text = text,
-            startOffset = startOffset,
-            endOffset = endOffset,
-            startLine1Indexed = windowStartLine + 1,
-            endLine1Indexed = windowEndLine,
+            startOffset = effectiveStartOffset,
+            endOffset = effectiveEndOffset,
+            startLine1Indexed = lineNumberAtOffset(fileContents, effectiveStartOffset) + 1,
+            endLine1Indexed = lineNumberAtOffset(fileContents, effectiveEndOffset) + 1,
             cursorOffsetInWindow = cursorOffsetInWindow,
             cursorLineInFile0Indexed = cursorLine,
         )
@@ -288,7 +345,12 @@ object OpenAICompletionsAdapter {
             }
             endOffset = i
         }
-        return fileContents.substring(startOffset, endOffset).trimEnd('\r', '\n')
+        val rawText = fileContents.substring(startOffset, endOffset)
+        val rawCursorOffset = (cursorPosition - startOffset).coerceIn(0, rawText.length)
+        // Same rationale as the window cap above: line counts assume short
+        // lines, so cap by characters too.
+        val (text, _) = truncateAroundPivot(rawText, rawCursorOffset, MAX_BROAD_CONTEXT_CHARS)
+        return text.trimEnd('\r', '\n')
     }
 
     // ---------------- Insertion-mode detection ----------------
