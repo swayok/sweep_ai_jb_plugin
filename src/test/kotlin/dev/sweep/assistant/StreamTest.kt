@@ -1,6 +1,6 @@
 package dev.sweep.assistant
 
-import dev.sweep.assistant.controllers.getJSONPrefix
+import dev.sweep.assistant.utils.getJSONPrefix
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.*
 import org.junit.jupiter.api.DisplayName

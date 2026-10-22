@@ -1,16 +1,9 @@
 package dev.sweep.assistant.startup
 
-import com.intellij.ide.BrowserUtil
-import com.intellij.ide.actions.ShowSettingsUtilImpl
 import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.notification.NotificationAction
-import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
-import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.Anchor
-import com.intellij.openapi.actionSystem.Constraints
-import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.KeyboardShortcut
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.LogLevel
@@ -20,38 +13,21 @@ import com.intellij.openapi.keymap.KeymapManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
-import com.intellij.openapi.wm.ToolWindowManager
-import com.intellij.openapi.wm.WindowManager
-import com.intellij.openapi.wm.ex.ToolWindowManagerListener
 import com.intellij.util.concurrency.AppExecutorUtil
-import dev.sweep.assistant.actions.AddToContextFromProjectAction
-import dev.sweep.assistant.actions.ReviewPRAction
-import dev.sweep.assistant.actions.SweepCommitMessageAction
-import dev.sweep.assistant.actions.SweepProblemsAction
 import dev.sweep.assistant.autocomplete.edit.AcceptEditCompletionAction
 import dev.sweep.assistant.autocomplete.edit.RecentEditsTracker
 import dev.sweep.assistant.autocomplete.edit.RejectEditCompletionAction
 import dev.sweep.assistant.autocomplete.vim.VimMotionGhostTextService
-import dev.sweep.assistant.components.SweepConfig
-import dev.sweep.assistant.controllers.EditorSelectionManager
-import dev.sweep.assistant.controllers.TerminalManagerService
-import dev.sweep.assistant.data.ProjectFilesCache
-import dev.sweep.assistant.entities.EntitiesCache
-import dev.sweep.assistant.services.*
-import dev.sweep.assistant.services.GatewayOnboardingService
+import dev.sweep.assistant.services.IdeaVimIntegrationService
+import dev.sweep.assistant.services.LocalAutocompleteServerManager
 import dev.sweep.assistant.settings.SweepMetaData
 import dev.sweep.assistant.settings.SweepSettings
-import dev.sweep.assistant.settings.SweepSettingsParser
-import dev.sweep.assistant.statusbar.FrontendStatusBarWidgetFactory
-import dev.sweep.assistant.tracking.EventType
-import dev.sweep.assistant.tracking.TelemetryService
 import dev.sweep.assistant.utils.SweepConstants
 import dev.sweep.assistant.utils.disableFullLineCompletion
 import dev.sweep.assistant.utils.disableFullLineCompletionAndNotify
-import dev.sweep.assistant.utils.logStartupData
 import dev.sweep.assistant.utils.showNotification
-import dev.sweep.assistant.utils.untrackIdeaFile
 import java.awt.event.KeyEvent
+import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.swing.KeyStroke
 
@@ -79,147 +55,9 @@ class SweepStartupActivity :
         // Install VimMotionGhostTextHandler to handle VIM motion with ghost text
         VimMotionGhostTextService.getInstance()
 
-        // Register AddToContextFromProjectAction dynamically
-        ApplicationManager.getApplication().invokeLater {
-            val actionManager = ActionManager.getInstance()
-
-            // Register AddToContextFromProjectAction (only once per IDE)
-            val actionId = "dev.sweep.assistant.actions.AddToContextFromProjectAction"
-            val addToContextAction =
-                if (actionManager.getAction(actionId) == null) {
-                    val action = AddToContextFromProjectAction()
-                    actionManager.unregisterAction(actionId)
-                    actionManager.registerAction(actionId, action)
-
-                    // Add to ProjectViewPopupMenu
-                    actionManager.getAction("ProjectViewPopupMenu")?.let { group ->
-                        if (group is DefaultActionGroup) {
-                            // Only add if not already present in the group
-                            if (!group.containsAction(action)) {
-                                group.addAction(
-                                    action,
-                                    Constraints(Anchor.BEFORE, "CutCopyPasteGroup"),
-                                )
-                            }
-                        }
-                    }
-                    action
-                } else {
-                    actionManager.getAction(actionId) as AddToContextFromProjectAction
-                }
-            SweepActionManager.getInstance(project).addToContextAction = addToContextAction
-
-            // Register SweepCommitMessageAction (only once per IDE)
-            val commitMessageActionId = "dev.sweep.assistant.actions.SweepCommitMessageAction"
-            val commitMessageAction =
-                if (actionManager.getAction(commitMessageActionId) == null) {
-                    val action = SweepCommitMessageAction()
-                    actionManager.unregisterAction(commitMessageActionId)
-                    actionManager.registerAction(commitMessageActionId, action)
-
-                    // Add to Vcs.MessageActionGroup
-                    actionManager.getAction("Vcs.MessageActionGroup")?.let { group ->
-                        if (group is DefaultActionGroup) {
-                            // Only add if not already present in the group
-                            if (!group.containsAction(action)) {
-                                group.addAction(
-                                    action,
-                                    Constraints(Anchor.LAST, null),
-                                )
-                            }
-                        }
-                    }
-                    action
-                } else {
-                    actionManager.getAction(commitMessageActionId) as SweepCommitMessageAction
-                }
-            SweepActionManager.getInstance(project).commitMessageAction = commitMessageAction
-
-            // Register SweepProblemsAction (only once per IDE)
-            val problemsActionId = "dev.sweep.assistant.actions.SweepProblemsAction"
-            val problemsAction =
-                if (actionManager.getAction(problemsActionId) == null) {
-                    val action = SweepProblemsAction()
-                    actionManager.unregisterAction(problemsActionId)
-                    actionManager.registerAction(problemsActionId, action)
-
-                    // Add to ProblemsView.ToolWindow.TreePopup
-                    actionManager.getAction("ProblemsView.ToolWindow.TreePopup")?.let { group ->
-                        if (group is DefaultActionGroup) {
-                            // Only add if not already present in the group
-                            if (!group.containsAction(action)) {
-                                group.addAction(
-                                    action,
-                                    Constraints(Anchor.FIRST, null),
-                                )
-                            }
-                        }
-                    }
-                    action
-                } else {
-                    actionManager.getAction(problemsActionId) as SweepProblemsAction
-                }
-            SweepActionManager.getInstance(project).problemsAction = problemsAction
-
-            // Register ReviewPRAction (only once per IDE)
-            val reviewPRActionId = "dev.sweep.assistant.actions.ReviewPRAction"
-            val reviewPRAction =
-                if (actionManager.getAction(reviewPRActionId) == null) {
-                    val action = ReviewPRAction()
-                    actionManager.unregisterAction(reviewPRActionId)
-                    actionManager.registerAction(reviewPRActionId, action)
-                    action
-                } else {
-                    actionManager.getAction(reviewPRActionId) as ReviewPRAction
-                }
-            SweepActionManager.getInstance(project).reviewPRAction = reviewPRAction
-        }
-
-        ApplicationManager.getApplication().invokeLater {
-            val savedVisibility = SweepMetaData.getInstance().isToolWindowVisible
-
-            val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(SweepConstants.TOOLWINDOW_NAME)
-            if (savedVisibility) {
-                toolWindow?.show()
-            }
-            // Listen for tool window visibility changes to persist state
-            project.messageBus.connect(SweepProjectService.getInstance(project)).subscribe(
-                ToolWindowManagerListener.TOPIC,
-                object : ToolWindowManagerListener {
-                    override fun stateChanged(
-                        toolWindowManager: ToolWindowManager,
-                        changeType: ToolWindowManagerListener.ToolWindowManagerEventType,
-                    ) {
-                        if (changeType == ToolWindowManagerListener.ToolWindowManagerEventType.HideToolWindow ||
-                            changeType == ToolWindowManagerListener.ToolWindowManagerEventType.ActivateToolWindow
-                        ) {
-                            val sweepToolWindow = toolWindowManager.getToolWindow(SweepConstants.TOOLWINDOW_NAME)
-                            if (sweepToolWindow != null) {
-                                SweepMetaData.getInstance().isToolWindowVisible = sweepToolWindow.isVisible
-                            }
-                        }
-                    }
-                },
-            )
-        }
-
-        // Initialize application-level services
-        RipgrepManager.getInstance() // Initialize ripgrep manager on startup
-
-        // Initialize project-level services
-        SweepProjectService.getInstance(project)
-        FeatureFlagService.getInstance(project)
-        ProjectFilesCache.getInstance(project)
-        EntitiesCache.getInstance(project)
-        TerminalManagerService.getInstance(project)
-        EditorSelectionManager.getInstance(project)
-        SweepNonProjectFilesService.getInstance(project)
-        SweepCommitMessageService.getInstance(project)
+        // Initialize the autocomplete request tracker
         RecentEditsTracker.getInstance(project)
         IdeaVimIntegrationService.getInstance(project).configureIdeaVimIntegration()
-        SweepMcpService.getInstance(project)
-        SweepColorChangeService.getInstance(project)
-        OSNotificationService.getInstance(project)
 
         // Auto-start local uvx autocomplete server if enabled and not already running.
         // Suppress when a custom OpenAI-compatible endpoint is configured — that path
@@ -235,57 +73,10 @@ class SweepStartupActivity :
             }
         }
 
-        // Send installation telemetry event on first run
-        val metaData = SweepMetaData.getInstance()
-        if (!metaData.hasSeenInstallationTelemetryEvent) {
-            val gatewayModeName = SweepConstants.GATEWAY_MODE.name
-            TelemetryService.getInstance().sendUsageEvent(
-                EventType.INSTALL_SWEEP,
-                userProperties = mapOf("gatewayMode" to gatewayModeName),
-            )
-            metaData.hasSeenInstallationTelemetryEvent = true
-        }
-
-        if (!SweepSettings.getInstance().hasBeenSet) {
-            if (SweepSettingsParser.isCloudEnvironment()) {
-                // Cloud: open tool window for login/settings
-                ApplicationManager.getApplication().invokeLater {
-                    if (!project.isDisposed) {
-                        ToolWindowManager.getInstance(project).getToolWindow(SweepConstants.TOOLWINDOW_NAME)?.show()
-                    }
-                }
-            } else {
-                // Non-cloud: preserve existing behavior
-                SweepAuthServer.start(project)
-            }
-        }
-
-        // Register appropriate status bar widget based on gateway mode
-        when (SweepConstants.GATEWAY_MODE) {
-            SweepConstants.GatewayMode.CLIENT -> {
-                // Frontend mode: simple widget that only opens settings
-                ApplicationManager.getApplication().invokeLater {
-                    val statusBar = WindowManager.getInstance().getStatusBar(project)
-                    statusBar?.addWidget(FrontendStatusBarWidgetFactory().createWidget(project), "before Position")
-
-                    // Only start auth flow and open browser if user is not authenticated
-                    if (!SweepSettings.getInstance().hasBeenSet) {
-                        SweepAuthServer.start(project)
-                        BrowserUtil.browse("https://app.sweep.dev", project)
-                    }
-                }
-            }
-            SweepConstants.GatewayMode.HOST -> {
-                // Backend mode: no widget
-            }
-            SweepConstants.GatewayMode.NA -> {
-                // Widget is registered via plugin.xml extension point
-            }
-        }
-
-        // Untrack plugin state files from VCS
-        untrackIdeaFile(project, "GhostTextManager_v2.xml")
-        untrackIdeaFile(project, "UnifiedUserActionsTrackerManager.xml")
+        // Untrack plugin state files from VCS (best-effort; uses the git CLI directly
+        // so this doesn't need a JGit dependency just for housekeeping)
+        untrackFromGit(project, ".idea/GhostTextManager_v2.xml")
+        untrackFromGit(project, ".idea/UnifiedUserActionsTrackerManager.xml")
 
         // Suppress KtLint plugin errors for ktlint
         // Skip when plugins with logger wrapper incompatibilities are installed
@@ -312,92 +103,32 @@ class SweepStartupActivity :
             }
         }
 
-        // Send health check to backend
-        logStartupData()
-
-        // Migrate privacy settings from SweepConfig to SweepMetaData
-        val isNewUser = metaData.chatsSent == 0 && metaData.autocompleteAcceptCount == 0
-        val oldPrivacyMode = if (isNewUser) false else SweepConfig.getInstance(project).isOldPrivacyModeEnabled()
-        if (!metaData.hasPrivacyModeBeenUpdatedFromProject) {
-            metaData.privacyModeEnabled = oldPrivacyMode
-            metaData.hasPrivacyModeBeenUpdatedFromProject = true
-        }
-
-        // Show Gateway onboarding notification if needed
-        GatewayOnboardingService.getInstance().showGatewayOnboardingIfNeeded(project)
-
-        // Check for dual plugin installation (Cloud + Enterprise)
-        checkForDualPluginInstallation(project)
-
         // Ensure accept/reject actions are bound
         ApplicationManager.getApplication().invokeLater {
             ensureEditAutocompleteActionsAreBound()
         }
     }
 
-    private fun checkForDualPluginInstallation(project: Project) {
-        ApplicationManager.getApplication().invokeLater {
-            if (project.isDisposed) return@invokeLater
-
-            val cloudPluginId = PluginId.getId("dev.sweep.assistant.cloud")
-            val enterprisePluginId = PluginId.getId("dev.sweep.assistant")
-
-            val isCloudInstalled =
-                PluginManagerCore.isPluginInstalled(cloudPluginId) &&
-                    PluginManagerCore.getPlugin(cloudPluginId)?.isEnabled == true
-            val isEnterpriseInstalled =
-                PluginManagerCore.isPluginInstalled(enterprisePluginId) &&
-                    PluginManagerCore.getPlugin(enterprisePluginId)?.isEnabled == true
-
-            if (isCloudInstalled && isEnterpriseInstalled) {
-                showDualInstallationWarning(project)
+    /**
+     * Removes a file from git tracking (git rm --cached) without failing if git
+     * isn't available or the file isn't tracked. Runs on a background thread.
+     */
+    private fun untrackFromGit(
+        project: Project,
+        relativePath: String,
+    ) {
+        val basePath = project.basePath ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                if (!File(basePath, relativePath).exists()) return@executeOnPooledThread
+                ProcessBuilder("git", "rm", "--cached", "--ignore-unmatch", relativePath)
+                    .directory(File(basePath))
+                    .start()
+                    .waitFor()
+            } catch (e: Exception) {
+                Logger.getInstance(SweepStartupActivity::class.java).debug("Failed to untrack $relativePath", e)
             }
         }
-    }
-
-    private fun showDualInstallationWarning(project: Project) {
-        val notification =
-            NotificationGroupManager
-                .getInstance()
-                .getNotificationGroup("Sweep AI Notifications")
-                .createNotification(
-                    title = "Multiple Sweep Versions Detected",
-                    content =
-                        """
-                        Both Cloud and Enterprise versions of Sweep are installed.
-                        Please uninstall one of them to avoid conflicts.
-                        If you are unsure which version to use, please contact the Sweep team at team@sweep.dev.
-                        """.trimIndent(),
-                    type = NotificationType.WARNING,
-                )
-
-        notification.addAction(
-            object : NotificationAction("Open Plugin Settings") {
-                override fun actionPerformed(
-                    e: AnActionEvent,
-                    notification: com.intellij.notification.Notification,
-                ) {
-                    com.intellij.ide.actions.ShowSettingsUtilImpl.showSettingsDialog(
-                        project,
-                        "preferences.pluginManager",
-                        "Sweep",
-                    )
-                }
-            },
-        )
-
-        notification.addAction(
-            object : NotificationAction("Dismiss") {
-                override fun actionPerformed(
-                    e: AnActionEvent,
-                    notification: com.intellij.notification.Notification,
-                ) {
-                    notification.expire()
-                }
-            },
-        )
-
-        notification.notify(project)
     }
 
     private fun handleFullLineCompletionConflicts(project: Project) {

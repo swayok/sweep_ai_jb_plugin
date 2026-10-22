@@ -49,8 +49,8 @@ import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.sweep.assistant.autocomplete.adjustFullContextForIde
 import dev.sweep.assistant.autocomplete.shouldRunAnnotatorsForSemanticHighlights
-import dev.sweep.assistant.components.SweepConfig
 import dev.sweep.assistant.settings.SweepMetaData
+import dev.sweep.assistant.settings.SweepSettings
 import dev.sweep.assistant.theme.SweepIcons
 import dev.sweep.assistant.theme.withAlpha
 import dev.sweep.assistant.utils.*
@@ -125,11 +125,9 @@ class GhostTextRenderer(
     private val hintFont = Font(Font.SANS_SERIF, Font.PLAIN, font.size - 1)
     private val shouldShowHint: Boolean
         get() {
-            val config = project?.let { SweepConfig.getInstance(it) }
-
             val metadata = SweepMetaData.getInstance()
             // Show if user explicitly enabled it OR if user hasn't disabled it and they're within first 10 accepts
-            return showHint && (config?.isShowAutocompleteBadge() == true || metadata.autocompleteAcceptCount <= 3)
+            return showHint && (SweepSettings.getInstance().showAutocompleteBadge || metadata.autocompleteAcceptCount <= 3)
         }
 
     // Cached values to avoid repeated calculations in paint()

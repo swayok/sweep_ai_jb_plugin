@@ -1,4 +1,4 @@
-package dev.sweep.assistant.agent.tools
+package dev.sweep.assistant.services
 
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
@@ -6,7 +6,27 @@ import com.intellij.terminal.JBTerminalWidget
 import com.intellij.terminal.ui.TerminalWidget
 import dev.sweep.assistant.utils.*
 import org.jetbrains.plugins.terminal.ShellTerminalWidget
+import org.jetbrains.plugins.terminal.TerminalProjectOptionsProvider
 import java.lang.reflect.Method
+
+/**
+ * Best-effort shell name detection from the project's configured terminal shell path
+ * (e.g. "/bin/zsh" -> "zsh", "powershell.exe" -> "powershell").
+ */
+private fun detectShellName(project: Project): String =
+    try {
+        val shellPath = TerminalProjectOptionsProvider.getInstance(project).shellPath
+        val unquoted = shellPath.trim().removeSurrounding("\"").removeSurrounding("'")
+        val fileName = unquoted.replace('\\', '/').substringAfterLast('/').lowercase()
+        val baseName = fileName.removeSuffix(".exe").removeSuffix(".cmd").removeSuffix(".bat")
+        when {
+            baseName == "pwsh" -> "powershell"
+            baseName.contains("powershell") -> "powershell"
+            else -> baseName
+        }
+    } catch (e: Exception) {
+        ""
+    }
 
 /**
  * Wrapper class to handle different terminal API versions using reflection.

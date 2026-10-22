@@ -1,16 +1,12 @@
-import com.google.protobuf.gradle.id
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.models.ProductRelease
 
 plugins {
-    application
     id("java")
     id("org.jetbrains.intellij.platform") version "2.2.0"
     kotlin("jvm") version "2.1.0"
-    id("com.google.protobuf") version "0.9.4"
     kotlin("plugin.serialization") version "1.9.20"
-    id("com.github.johnrengelman.shadow") version "8.1.1"
 }
 
 val remoteRobotVersion = "0.11.20"
@@ -18,7 +14,7 @@ val pluginId = "dev.sweep.assistant"
 val pluginName = "Sweep AI NES Local"
 println("Building plugin: $pluginName with ID: $pluginId")
 group = "dev.sweep"
-version = "1.29.3"
+version = "1.30.0"
 
 repositories {
     mavenCentral()
@@ -102,11 +98,6 @@ tasks {
     processResources {
         // Set duplicate strategy for all files
         duplicatesStrategy = DuplicatesStrategy.INCLUDE
-
-        // Ensure ripgrep binaries are included
-        from("src/main/resources") {
-            include("tools/**")
-        }
     }
 
     processTestResources {
@@ -114,35 +105,8 @@ tasks {
         duplicatesStrategy = DuplicatesStrategy.INCLUDE
     }
 
-    // Fix: Create a Copy task instead of DefaultTask for configuration cache compatibility
-    val copyRipgrepToSandbox by creating(Copy::class) {
-        val sandboxPluginDir =
-            layout.buildDirectory
-                .dir("idea-sandbox/plugins/${project.name}")
-
-        from("src/main/resources/tools") {
-            include("ripgrep/macos-aarch64/rg")
-        }
-        into(sandboxPluginDir.map { it.dir("tools") })
-
-        doLast {
-            println("Copied ripgrep to sandbox")
-        }
-    }
-
-    // Hook the copy task to prepareSandbox
-    prepareSandbox {
-        finalizedBy(copyRipgrepToSandbox)
-    }
-
     buildPlugin {
         archiveBaseName.set("sweepai")
-
-        // Ensure the ripgrep binary is included in the plugin JAR
-        from("src/main/resources") {
-            include("tools/ripgrep/**")
-            into("lib/tools")
-        }
     }
 
     runIde {
@@ -196,48 +160,11 @@ tasks {
     verifyPlugin {}
 }
 
-val mcpVersion = "0.8.0"
-
 dependencies {
-    implementation("com.google.code.gson:gson:2.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.1")
     implementation("io.github.java-diff-utils:java-diff-utils:4.12")
     implementation("org.eclipse.jgit:org.eclipse.jgit:6.7.0.202309050840-r")
-    implementation("org.commonmark:commonmark:0.21.0")
-    implementation("org.commonmark:commonmark-ext-gfm-tables:0.21.0")
-    implementation("org.commonmark:commonmark-ext-autolink:0.21.0")
-    implementation("com.flipkart.zjsonpatch:zjsonpatch:0.4.14") {
-        // Exclude Jackson dependencies since we'll use IntelliJ's
-        exclude(group = "com.fasterxml.jackson.core")
-        exclude(group = "com.fasterxml.jackson.databind")
-    }
-    implementation("me.xdrop:fuzzywuzzy:1.4.0")
-    implementation("org.xerial:sqlite-jdbc:3.44.1.0")
-    implementation("com.google.protobuf:protobuf-kotlin:3.23.4")
-    // MCP SDK - use JVM-specific artifacts for better compatibility
-    implementation("io.modelcontextprotocol:kotlin-sdk-client-jvm:$mcpVersion") {
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-core")
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-jdk8")
-    }
-    implementation("io.modelcontextprotocol:kotlin-sdk-core-jvm:$mcpVersion") {
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-core")
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-jdk8")
-    }
-    // Ktor client with CIO engine for MCP HTTP transports
-    implementation("io.ktor:ktor-client-cio:3.2.3") {
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-core")
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-jdk8")
-        exclude("org.jetbrains.kotlinx", "kotlinx-coroutines-slf4j")
-    }
-    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.18.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.aayushatharva.brotli4j:brotli4j:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-osx-aarch64:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-osx-x86_64:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-linux-x86_64:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-linux-aarch64:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-windows-x86_64:1.16.0")
-    implementation("com.aayushatharva.brotli4j:native-windows-aarch64:1.16.0")
 
     testImplementation("org.mockito:mockito-core:5.2.0")
     testImplementation("org.mockito:mockito-inline:5.2.0")
@@ -266,7 +193,7 @@ dependencies {
 //        pycharmCommunity("2024.3.4")
 //        pycharmCommunity("2025.1.1")
 //        pycharmProfessional("2025.1")
-        bundledPlugins("org.jetbrains.plugins.terminal", "org.intellij.plugins.markdown", "Git4Idea")
+        bundledPlugins("org.jetbrains.plugins.terminal", "Git4Idea")
 //        plugin("IdeaVIM:2.19.0")
 //        plugin("org.jetbrains.completion.full.line:241.18034.76") // requires  intellijIdeaUltimate("2024.1.7")
 //        plugin("com.github.copilot:1.5.45-243") // requires kotlin 2.1.0 and a lot of memory
@@ -286,8 +213,6 @@ kotlin {
         main {
             kotlin.srcDirs(
                 "src/main/kotlin",
-                "build/generated/source/proto/main/java",
-                "build/generated/source/proto/main/kotlin",
                 "scripts",
             )
             // Add resources directory explicitly
@@ -296,21 +221,6 @@ kotlin {
         test {
             kotlin.srcDirs("src/test/kotlin")
             resources.srcDirs("src/test/resources")
-        }
-    }
-}
-
-protobuf {
-    protoc {
-        artifact = "com.google.protobuf:protoc:3.23.4"
-    }
-
-    // Generate Kotlin code
-    generateProtoTasks {
-        all().forEach { task ->
-            task.builtins {
-                id("kotlin")
-            }
         }
     }
 }
